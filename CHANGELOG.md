@@ -1,0 +1,24 @@
+# Changelog
+
+This changelog documents notable changes made in this fork after diverging from the upstream base at `d4a44b8`.
+
+## Unreleased
+
+### Added
+- Added `generate_maps_csv.py` to derive `maps.csv` entries from original iGPSport `.map` filenames.
+- Added `run.ps1` and `run.sh` for the full end-to-end workflow: generate `maps.csv`, then build new map files.
+- Added project metadata and dependency management via `pyproject.toml`, `.python-version`, and `uv.lock`.
+- Added automated tests for the CSV generator in `test_generate_maps_csv.py`.
+- Added Python cache and pytest cache ignore rules to `.gitignore`.
+
+### Changed
+- Updated `script.ps1` and `script.sh` to make Mapsforge writer tuning configurable.
+- Changed the default writer behavior from fixed `hd` mode to adaptive `auto` mode.
+- Added RAM-first Mapsforge execution with automatic retry in `hd` mode if the RAM attempt fails.
+- Added adaptive Java heap sizing capped to about 80% of installed RAM.
+- Reduced default thread pressure for larger extracts to avoid excessive memory and IO usage.
+- Updated the README to describe the new workflow, project setup, adaptive writer behavior, and troubleshooting guidance.
+
+### Notes
+- The generated filename geocode is now based on the actual bounding box stored in the generated `.map` file, so it may differ slightly from the original vendor filename when the produced map coverage differs.
+- `run.*` scripts are the full workflow; `script.*` scripts are the map-generation-only step and require an existing `maps.csv`.
