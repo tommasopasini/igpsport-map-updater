@@ -1,0 +1,15 @@
+[project]
+name = "igpsport-map-updater"
+version = "0.1.0"
+description = "Generate custom map files for iGPSport cycling computers from OpenStreetMap data"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+pbf = ["osmium>=4.0.0"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

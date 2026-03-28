@@ -16,6 +16,7 @@ Official support/download page: https://www.igpsport.com/en/support/product
 ## Requirements
 
 - **Java 17** or higher
+- **Python 3.12** or higher (for utilities like `generate_maps_csv.py`)
 - **Internet connection** (for downloading OSM data and dependencies)
 - **Disk space**: Several GB depending on the size of the regions being processed
 
@@ -30,6 +31,13 @@ Official support/download page: https://www.igpsport.com/en/support/product
 - `curl` (for downloading files)
 - `unzip` (for extracting archives)
 - `bc` (for mathematical calculations)
+
+### Python Setup
+
+```bash
+uv sync                # installs dev dependencies (pytest)
+uv sync --extra pbf    # also installs pyosmium (needed for extract_tags_pbf.py)
+```
 
 ## Important Notes
 
@@ -89,26 +97,76 @@ This means the maps effectively support **33 highway types** (21 native + 12 tra
 
 See the [Mapsforge tag-mapping reference](https://github.com/mapsforge/mapsforge/blob/master/mapsforge-map-writer/src/main/config/tag-mapping.xml) for all available OpenStreetMap tags.
 
-## How to Run
+## Quick Start
 
-### Windows
+### 1. Backup your original maps
 
-Run the PowerShell script:
+Connect your iGPSport device via USB and copy all `.map` files from the device to a folder on your computer (e.g., `backup/`). **Keep this backup safe** — you'll need it if you ever want to revert.
+
+### 2. Run the updater
+
+The `run` script does everything in one go: it reads your original map filenames to figure out which regions you need, generates `maps.csv`, downloads the latest OpenStreetMap data, and generates updated `.map` files in the `output/` directory.
+
+#### Windows
+
+```powershell
+.\run.ps1 backup\
+```
+
+#### Unix/Linux/macOS
+
+```bash
+chmod +x run.sh
+./run.sh backup/
+```
+
+This takes a while depending on the number and size of regions.
+
+If you prefer to run the steps separately (e.g., to edit `maps.csv` before generating), see [Running Step by Step](#running-step-by-step).
+
+`run.ps1` / `run.sh` are the full end-to-end workflow. `script.ps1` / `script.sh` are the map-generation-only step and assume `maps.csv` already exists.
+
+### 3. Copy maps to your device
+
+1. Delete the old maps from your iGPSport device
+2. Copy the new `.map` files from `output/` to your device
+3. Safely eject and restart the device
+
+## Running Step by Step
+
+You can also run each step individually, which is useful if you want to review or manually edit `maps.csv` before generating maps.
+
+### Step 1: Generate maps.csv
+
+```bash
+python generate_maps_csv.py backup/
+```
+
+The script reads the iGPSport filenames, figures out which geographic regions they cover, and finds the matching download URLs from [Geofabrik](https://download.geofabrik.de/). Review the output to verify the matched regions are correct.
+
+Alternatively, you can create `maps.csv` manually — see [CSV File Structure](#csv-file-structure).
+
+### Step 2: Generate maps
+
+#### Windows
 
 ```powershell
 .\script.ps1
 ```
 
-Or right-click `script.ps1` and select "Run with PowerShell"
-
-### Unix/Linux/macOS
-
-Make the script executable and run it:
+#### Unix/Linux/macOS
 
 ```bash
 chmod +x script.sh
 ./script.sh
 ```
+
+By default, the generator now uses an adaptive Mapsforge configuration:
+- It prefers the in-memory (`ram`) writer to avoid excessive temp-file IO.
+- It caps Java heap to about 80% of installed RAM.
+- It retries once with the disk-backed (`hd`) writer if the RAM attempt fails.
+
+You can still override this manually with `MAP_WRITER_TYPE`, `MAP_WRITER_THREADS`, `JAVA_XMS`, `JAVA_XMX`, and `JAVA_TMP_DIR`.
 
 ## What the Script Does
 
@@ -118,8 +176,10 @@ chmod +x script.sh
 4. **Downloads OSM PBF files** - Raw OpenStreetMap data from Geofabrik
 5. **Downloads Polygon files** - Geographic boundary definitions
 6. **Transforms tags** - Converts unsupported OSM tags to device-compatible equivalents
-7. **Generates maps** - Creates Mapsforge `.map` files with proper zoom levels
-8. **Renames output** - Calculates GEOCODE and applies IGPSPORT filename convention
+7. **Chooses writer settings** - Selects adaptive Mapsforge writer mode, threads, and heap size
+8. **Generates maps** - Creates Mapsforge `.map` files with proper zoom levels
+9. **Retries if needed** - Falls back from RAM mode to HD mode on writer failure
+10. **Renames output** - Calculates GEOCODE and applies IGPSPORT filename convention
 
 ## CSV File Structure
 
@@ -129,31 +189,35 @@ The `maps.csv` file defines which regions to process. It has three columns:
 |--------|-------------|---------|
 | **Original filename** | The target IGPSPORT map filename format | `BR01002303102B83FO00N00E.map` |
 | **OSM BPF URL** | URL to download the OpenStreetMap PBF file | `https://download.geofabrik.de/south-america/brazil-latest.osm.pbf` |
-| **Poly URL** | URL to download the polygon boundary file | `https://download.openstreetmap.fr/polygons/south-america/brazil/central-west/distrito-federal.poly` |
+| **Poly URL** | URL to download the polygon boundary file | `https://download.geofabrik.de/europe/germany/hessen.poly` |
 
 ### Example CSV Content
 
 ```csv
 Original filename,OSM BPF URL,Poly URL
-BR01002303102B83FO00N00E.map,https://download.geofabrik.de/south-america/brazil-latest.osm.pbf,https://download.openstreetmap.fr/polygons/south-america/brazil/central-west/distrito-federal.poly
-BR02002303102833DN04O04Q.map,https://download.geofabrik.de/south-america/brazil-latest.osm.pbf,https://download.openstreetmap.fr/polygons/south-america/brazil/central-west/goias.poly
+DE07002303103AO23I01L029.map,https://download.geofabrik.de/europe/germany/hessen-latest.osm.pbf,https://download.geofabrik.de/europe/germany/hessen.poly
+DE090023031039R20Z03D02W.map,https://download.geofabrik.de/europe/germany/niedersachsen-latest.osm.pbf,https://download.geofabrik.de/europe/germany/niedersachsen.poly
 ```
 
 ### Where to Find Resources
 
 - **OSM PBF files**: [Geofabrik Downloads](https://download.geofabrik.de/)
-- **Polygon files**: [OpenStreetMap Polygons](https://download.openstreetmap.fr/polygons/)
+- **Polygon files**: [Geofabrik Downloads](https://download.geofabrik.de/) (`.poly` files alongside the PBF files)
 
 ## Directory Structure
 
 ```
 igpsport-map-updater/
-├── script.sh                    # Unix/Linux/macOS execution script
-├── script.ps1                   # Windows PowerShell execution script
+├── run.sh                       # Full workflow - Unix/Linux/macOS
+├── run.ps1                      # Full workflow - Windows
+├── script.sh                    # Map generation only - Unix/Linux/macOS
+├── script.ps1                   # Map generation only - Windows
 ├── maps.csv                     # Configuration file with map definitions
 ├── tag-igpsport.xml             # Tag configuration for Mapsforge writer
 ├── tag-igpsport-transform.xml   # Tag transformation rules
-├── extract_tags.py              # Utility to extract tags from .map files
+├── generate_maps_csv.py         # Generate maps.csv from original map files
+├── extract_tags_map.py          # Utility to extract tags from .map files
+├── extract_tags_pbf.py          # Utility to extract tags from PBF files
 ├── download/                    # Downloaded OSM PBF and polygon files
 │   ├── *.osm.pbf
 │   └── *.poly
@@ -263,9 +327,22 @@ java -version
 ```
 
 ### Out of Memory Errors
-Increase Java heap size by editing the `JAVA_OPTS` variable in the script:
+The scripts already choose heap size automatically. If you still run into memory problems, try one of these:
+
+- Force the disk-backed writer: `MAP_WRITER_TYPE=hd`
+- Lower the thread count: `MAP_WRITER_THREADS=1`
+- Set a smaller heap manually with `JAVA_XMS` / `JAVA_XMX`
+
+Examples:
+
+```powershell
+$env:MAP_WRITER_TYPE = "hd"
+$env:MAP_WRITER_THREADS = "1"
+.\script.ps1
+```
+
 ```bash
-export JAVA_OPTS="-Xms2g -Xmx16g -Djava.io.tmpdir=$TMP_DIR"
+MAP_WRITER_TYPE=hd MAP_WRITER_THREADS=1 ./script.sh
 ```
 
 ### Download Failures
@@ -302,92 +379,45 @@ All other features (buildings, POIs, amenities, etc.) are filtered out to reduce
 
 ## Utilities
 
+All utilities use only the Python standard library unless noted otherwise.
+
+### CSV Generator (generate_maps_csv.py)
+
+Automatically generates `maps.csv` from your original iGPSport map files. This is the recommended first step — see [Quick Start](#quick-start).
+
+iGPSport map filenames encode the country, region, and geographic bounding box in a specific format. This script decodes that information and matches each region against the [Geofabrik region index](https://download.geofabrik.de/) (512 regions worldwide) to find the correct PBF and polygon download URLs.
+
+```bash
+# Generate maps.csv from your backup directory
+python generate_maps_csv.py backup/
+
+# Specify a custom output path
+python generate_maps_csv.py backup/ -o my_maps.csv
+```
+
 ### Map Tag Extractor (extract_tags_map.py)
 
-A Python utility to extract and analyze tags from Mapsforge `.map` files. Useful for:
-- Inspecting what tags are embedded in existing maps
-- Comparing tags between different map versions
-- Debugging tag configuration issues
+Inspects the generated `.map` files to show which OSM tags they contain. Useful for verifying that the tag configuration and transformations work as expected, or for comparing your generated maps against the originals.
 
-**Usage:**
 ```bash
-# Single file
-python extract_tags_map.py output/map.map
-
-# Single file with output
-python extract_tags_map.py output/map.map tags.txt
-
-# Process all files in folder
-python extract_tags_map.py backup/
-
-# Process folder with output
-python extract_tags_map.py backup/ tags_output/
+python extract_tags_map.py output/map.map            # single file
+python extract_tags_map.py backup/                    # all files in folder
+python extract_tags_map.py backup/ tags_output/       # with output folder
 ```
 
 ### PBF Tag Extractor (extract_tags_pbf.py)
 
-A Python utility to extract and analyze tags from raw OSM PBF files before processing. This tool helps you understand what tags are available in the source data and plan your tag filtering/transformation strategy.
+Analyzes the raw OpenStreetMap source data (`.osm.pbf` files) **before** processing. This is a development tool for working on the tag configuration — it shows which OSM tags exist in the source data and how frequently they appear, helping you decide which tags to include or transform.
 
-**Features:**
-- Extract tags from nodes, ways, and relations separately
-- Display tag frequency statistics
-- Export results in multiple formats (text, JSON, CSV)
-- Process individual files or entire folders
-- Filter by minimum occurrence count
-- Requires either `pyosmium` (faster) or `osmium-tool`
+**Requires pyosmium** — install with `uv sync --extra pbf`.
 
-**Installation:**
 ```bash
-# Option 1: Install pyosmium (recommended - faster)
-pip install osmium
-
-# Option 2: Install osmium-tool
-# Ubuntu/Debian
-sudo apt-get install osmium-tool
-
-# Fedora
-sudo dnf install osmium-tool
-
-# macOS
-brew install osmium-tool
+python extract_tags_pbf.py download/hessen-latest.osm.pbf              # display in terminal
+python extract_tags_pbf.py download/hessen-latest.osm.pbf -o tags.json -f json  # export to JSON
+python extract_tags_pbf.py download/ -o output/ -f csv -m 10           # folder, CSV, min 10 occurrences
 ```
 
-**Usage:**
-```bash
-# Single file - display tags in terminal
-python extract_tags_pbf.py download/brazil-latest.osm.pbf
-
-# Single file - export to text file
-python extract_tags_pbf.py download/sao-paulo.pbf -o tags.txt
-
-# Single file - export to JSON
-python extract_tags_pbf.py download/sao-paulo.pbf -o tags.json -f json
-
-# Single file - export to CSV
-python extract_tags_pbf.py download/sao-paulo.pbf -o tags.csv -f csv
-
-# Process all .pbf files in folder
-python extract_tags_pbf.py download/
-
-# Process folder and export each file
-python extract_tags_pbf.py download/ -o output_tags/
-
-# Process with filters
-python extract_tags_pbf.py download/ -o output/ -f json -m 10 -d 100
-```
-
-**Options:**
-- `-o, --output`: Output file or folder for extracted tags
-- `-f, --format`: Output format - `text` (default), `json`, or `csv`
-- `-m, --min-count`: Minimum occurrence count to include (default: 1)
-- `-d, --display`: Maximum tags to display in terminal (default: 50)
-
-**Use Cases:**
-- Analyze tag distribution in source OSM data
-- Identify which highway types are present in your region
-- Determine what tags need transformation for IGPSPORT compatibility
-- Compare tag usage across different regions
-- Plan custom tag filtering strategies
+Options: `-o` output path, `-f` format (text/json/csv), `-m` min occurrence count, `-d` max display count.
 
 ## License
 
