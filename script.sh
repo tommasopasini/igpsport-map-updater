@@ -101,33 +101,49 @@ while IFS=',' read -r original_name pbf_url poly_url; do
     
     echo ""
     echo "Processing entry: $original_name"
-    
-    # Download PBF file
-    pbf_filename=$(basename "$pbf_url")
-    pbf_path="$DOWNLOAD_DIR/$pbf_filename"
-    
-    if [ ! -f "$pbf_path" ]; then
-        echo "  Downloading PBF: $pbf_filename..."
-        curl -sL -o "$pbf_path" "$pbf_url"
-        echo "  PBF downloaded."
-    else
-        echo "  PBF already exists: $pbf_filename"
+
+    IFS=';' read -r -a pbf_urls <<< "$pbf_url"
+    IFS=';' read -r -a poly_urls <<< "$poly_url"
+
+    if [ "${#pbf_urls[@]}" -eq 0 ] || [ "${#pbf_urls[@]}" -ne "${#poly_urls[@]}" ]; then
+        echo "WARNING: Skipping invalid CSV row for $original_name (PBF/poly counts do not match)"
+        continue
     fi
-    
-    # Download Poly file
-    poly_filename=$(basename "$poly_url")
-    poly_path="$DOWNLOAD_DIR/$poly_filename"
-    
-    if [ ! -f "$poly_path" ]; then
-        echo "  Downloading Poly: $poly_filename..."
-        curl -sL -o "$poly_path" "$poly_url"
-        echo "  Poly downloaded."
-    else
-        echo "  Poly already exists: $poly_filename"
-    fi
-    
-    PBF_FILES+=("$pbf_path")
-    POLY_FILES+=("$poly_path")
+
+    pbf_paths=()
+    poly_paths=()
+    for source_index in "${!pbf_urls[@]}"; do
+        trimmed_pbf_url=$(echo "${pbf_urls[$source_index]}" | sed 's/^ *//;s/ *$//')
+        trimmed_poly_url=$(echo "${poly_urls[$source_index]}" | sed 's/^ *//;s/ *$//')
+
+        pbf_filename=$(basename "$trimmed_pbf_url")
+        pbf_path="$DOWNLOAD_DIR/$pbf_filename"
+
+        if [ ! -f "$pbf_path" ]; then
+            echo "  Downloading PBF: $pbf_filename..."
+            curl -sL -o "$pbf_path" "$trimmed_pbf_url"
+            echo "  PBF downloaded."
+        else
+            echo "  PBF already exists: $pbf_filename"
+        fi
+
+        poly_filename=$(basename "$trimmed_poly_url")
+        poly_path="$DOWNLOAD_DIR/$poly_filename"
+
+        if [ ! -f "$poly_path" ]; then
+            echo "  Downloading Poly: $poly_filename..."
+            curl -sL -o "$poly_path" "$trimmed_poly_url"
+            echo "  Poly downloaded."
+        else
+            echo "  Poly already exists: $poly_filename"
+        fi
+
+        pbf_paths+=("$pbf_path")
+        poly_paths+=("$poly_path")
+    done
+
+    PBF_FILES+=("$(IFS=';'; echo "${pbf_paths[*]}")")
+    POLY_FILES+=("$(IFS=';'; echo "${poly_paths[*]}")")
     ORIGINAL_NAMES+=("$original_name")
     
 done < "$CSV_FILE"
@@ -304,6 +320,19 @@ except Exception as e:
     echo "$date_string"
 }
 
+extract_combined_pbf_date() {
+    local latest_date=""
+    local pbf_file
+    for pbf_file in "$@"; do
+        current_date=$(extract_pbf_date "$pbf_file")
+        if [ -n "$current_date" ] && { [ -z "$latest_date" ] || [ "$current_date" \> "$latest_date" ]; }; then
+            latest_date="$current_date"
+        fi
+    done
+
+    echo "$latest_date"
+}
+
 convert_to_base36() {
     local value=$1
     local length=$2
@@ -433,25 +462,52 @@ run_osmosis_map_writer() {
     local threads="$2"
     local java_xms="$3"
     local java_xmx="$4"
+    local cmd=("$OSMOSIS_DIR/bin/osmosis-with-mapsforge")
 
     export JAVA_OPTS="-Xms$java_xms -Xmx$java_xmx -Djava.io.tmpdir=$TMP_DIR"
     rm -f "$OUTPUT_FILE"
 
-    "$OSMOSIS_DIR/bin/osmosis-with-mapsforge" \
-        --read-pbf-fast file="$INPUT_FILE" \
-        --bounding-polygon file="$POLY_FILE" \
-        --tag-transform file="$TAG_TRANSFORM_FILE" \
-        --mapfile-writer file="$OUTPUT_FILE" type="$writer_type" zoom-interval-conf=13,13,13,14,14,14 threads="$threads" tag-conf-file="$TAG_CONF_FILE"
+    for source_index in "${!INPUT_FILES[@]}"; do
+        cmd+=(
+            --read-pbf-fast "file=${INPUT_FILES[$source_index]}"
+            --bounding-polygon "file=${POLY_FILES[$source_index]}"
+            --tag-transform "file=$TAG_TRANSFORM_FILE"
+        )
+
+        if [ "$source_index" -ge 1 ]; then
+            cmd+=(--merge)
+        fi
+    done
+
+    cmd+=(
+        --mapfile-writer "file=$OUTPUT_FILE"
+        "type=$writer_type"
+        "zoom-interval-conf=13,13,13,14,14,14"
+        "threads=$threads"
+        "tag-conf-file=$TAG_CONF_FILE"
+    )
+
+    "${cmd[@]}"
 }
 
 file_index=0
 for i in "${!PBF_FILES[@]}"; do
     file_index=$((file_index + 1))
-    INPUT_FILE="${PBF_FILES[$i]}"
-    POLY_FILE="${POLY_FILES[$i]}"
+    IFS=';' read -r -a INPUT_FILES <<< "${PBF_FILES[$i]}"
+    IFS=';' read -r -a POLY_FILES <<< "${POLY_FILES[$i]}"
     ORIGINAL_NAME="${ORIGINAL_NAMES[$i]}"
-    file_name=$(basename "$INPUT_FILE")
-    pbf_size_bytes=$(wc -c < "$INPUT_FILE" | tr -d ' ')
+    if [ "${#INPUT_FILES[@]}" -eq 1 ]; then
+        file_name=$(basename "${INPUT_FILES[0]}")
+        poly_name=$(basename "${POLY_FILES[0]}")
+    else
+        file_name="${#INPUT_FILES[@]} merged sources"
+        poly_name="${#POLY_FILES[@]} matching polygons"
+    fi
+    pbf_size_bytes=0
+    for pbf_file in "${INPUT_FILES[@]}"; do
+        file_size=$(wc -c < "$pbf_file" | tr -d ' ')
+        pbf_size_bytes=$((pbf_size_bytes + file_size))
+    done
     pbf_size_mb=$((pbf_size_bytes / 1024 / 1024))
     total_physical_bytes=$(get_total_physical_memory_bytes)
     total_physical_gb=$(awk -v total="$total_physical_bytes" 'BEGIN { printf("%.2f", total / 1024 / 1024 / 1024) }')
@@ -480,12 +536,13 @@ for i in "${!PBF_FILES[@]}"; do
     
     # Extract date from PBF file before processing
     echo "Extracting date from PBF file..."
-    date_string=$(extract_pbf_date "$INPUT_FILE")
+    date_string=$(extract_combined_pbf_date "${INPUT_FILES[@]}")
     
     echo "=========================================="
     echo "Processing [$file_index/${#PBF_FILES[@]}]"
     echo "  PBF File:      $file_name"
-    echo "  Poly File:     $(basename "$POLY_FILE")"
+    echo "  Poly File:     $poly_name"
+    echo "  Source Mode:   $(if [ "${#INPUT_FILES[@]}" -eq 1 ]; then echo "single-region"; else echo "multi-region blend (${#INPUT_FILES[@]} sources)"; fi)"
     echo "  Original Name: $ORIGINAL_NAME"
     echo "  Country Code:  $COUNTRY_CODE"
     echo "  Product Code:  $PRODUCT_CODE"
@@ -497,7 +554,7 @@ for i in "${!PBF_FILES[@]}"; do
     echo "  Java Heap:     -Xms$effective_java_xms -Xmx$effective_java_xmx"
     if [ "$MAP_WRITER_TYPE" = "auto" ]; then
         if [ "$auto_reason" = "ram_capped_by_total_ram" ]; then
-            echo "  Auto Decision: ram profile capped to 80% of installed RAM, then retry with hd if needed"
+            echo "  Auto Decision: ram profile capped to about 2/3 of installed RAM, then retry with hd if needed"
         elif [ "$auto_reason" = "fallback_to_hd_due_to_total_ram_cap" ]; then
             echo "  Auto Decision: total RAM too small for a useful ram profile, using hd"
         else

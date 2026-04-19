@@ -98,9 +98,7 @@ if (-not (Test-Path $CSV_FILE)) {
 
 # Read CSV file and download files
 Write-Host "Reading maps.csv..."
-$PBF_FILES = @()
-$POLY_FILES = @()
-$ORIGINAL_NAMES = @()
+$MAP_ENTRIES = @()
 
 $csv = @(Import-Csv $CSV_FILE)
 $csv_total = $csv.Count
@@ -111,55 +109,70 @@ foreach ($row in $csv) {
     $pct = [math]::Floor((($csv_index - 1) / $csv_total) * 100)
     Write-Progress -Activity "Downloading data" -Status "[$csv_index/$csv_total] $($row.'Original filename')" -PercentComplete $pct
     $original_name = $row.'Original filename'
-    $pbf_url = $row.'OSM BPF URL'
-    $poly_url = $row.'Poly URL'
+    $pbf_urls = @($row.'OSM BPF URL' -split ';' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $poly_urls = @($row.'Poly URL' -split ';' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     
     if ([string]::IsNullOrWhiteSpace($original_name)) {
+        continue
+    }
+
+    if ($pbf_urls.Count -eq 0 -or $pbf_urls.Count -ne $poly_urls.Count) {
+        Write-Warning "Skipping invalid CSV row for $original_name (PBF/poly counts do not match)"
         continue
     }
     
     Write-Host ""
     Write-Host "Processing entry: $original_name"
-    
-    # Download PBF file
-    $pbf_filename = Split-Path $pbf_url -Leaf
-    $pbf_path = Join-Path $DOWNLOAD_DIR $pbf_filename
-    
-    if (-not (Test-Path $pbf_path)) {
-        Write-Host "  Downloading PBF: $pbf_filename..."
-        Invoke-WebRequest -Uri $pbf_url -OutFile $pbf_path -UseBasicParsing
-        Write-Host "  PBF downloaded."
-    } else {
-        Write-Host "  PBF already exists: $pbf_filename"
+
+    $pbf_paths = @()
+    $poly_paths = @()
+    for ($sourceIndex = 0; $sourceIndex -lt $pbf_urls.Count; $sourceIndex++) {
+        $pbf_url = $pbf_urls[$sourceIndex]
+        $poly_url = $poly_urls[$sourceIndex]
+
+        $pbf_filename = Split-Path $pbf_url -Leaf
+        $pbf_path = Join-Path $DOWNLOAD_DIR $pbf_filename
+
+        if (-not (Test-Path $pbf_path)) {
+            Write-Host "  Downloading PBF: $pbf_filename..."
+            Invoke-WebRequest -Uri $pbf_url -OutFile $pbf_path -UseBasicParsing
+            Write-Host "  PBF downloaded."
+        } else {
+            Write-Host "  PBF already exists: $pbf_filename"
+        }
+
+        $poly_filename = Split-Path $poly_url -Leaf
+        $poly_path = Join-Path $DOWNLOAD_DIR $poly_filename
+
+        if (-not (Test-Path $poly_path)) {
+            Write-Host "  Downloading Poly: $poly_filename..."
+            Invoke-WebRequest -Uri $poly_url -OutFile $poly_path -UseBasicParsing
+            Write-Host "  Poly downloaded."
+        } else {
+            Write-Host "  Poly already exists: $poly_filename"
+        }
+
+        $pbf_paths += $pbf_path
+        $poly_paths += $poly_path
     }
-    
-    # Download Poly file
-    $poly_filename = Split-Path $poly_url -Leaf
-    $poly_path = Join-Path $DOWNLOAD_DIR $poly_filename
-    
-    if (-not (Test-Path $poly_path)) {
-        Write-Host "  Downloading Poly: $poly_filename..."
-        Invoke-WebRequest -Uri $poly_url -OutFile $poly_path -UseBasicParsing
-        Write-Host "  Poly downloaded."
-    } else {
-        Write-Host "  Poly already exists: $poly_filename"
+
+    $MAP_ENTRIES += [PSCustomObject]@{
+        OriginalName = $original_name
+        PbfPaths = $pbf_paths
+        PolyPaths = $poly_paths
     }
-    
-    $PBF_FILES += $pbf_path
-    $POLY_FILES += $poly_path
-    $ORIGINAL_NAMES += $original_name
 }
 
 Write-Progress -Activity "Downloading data" -Completed
 
-if ($PBF_FILES.Count -eq 0) {
+if ($MAP_ENTRIES.Count -eq 0) {
     Write-Error "ERROR: No entries found in maps.csv"
     exit 1
 }
 
 Write-Host ""
 Write-Host "=========================================="
-Write-Host "Found $($PBF_FILES.Count) entries to process"
+Write-Host "Found $($MAP_ENTRIES.Count) entries to process"
 Write-Host "=========================================="
 Write-Host ""
 Write-Host "Mapsforge configuration:"
@@ -382,6 +395,24 @@ function Get-GeoName {
     return "$(Convert-ToBase36 $x_start 3)$(Convert-ToBase36 $y_start 3)$(Convert-ToBase36 ($x_span - 1) 3)$(Convert-ToBase36 ($y_span - 1) 3)"
 }
 
+function Get-CombinedPbfDate {
+    param([string[]]$pbfFiles)
+
+    $dates = @()
+    foreach ($pbfFile in $pbfFiles) {
+        $date = Get-PbfDate $pbfFile
+        if (-not [string]::IsNullOrWhiteSpace($date)) {
+            $dates += $date
+        }
+    }
+
+    if ($dates.Count -eq 0) {
+        return ""
+    }
+
+    return ($dates | Sort-Object | Select-Object -Last 1)
+}
+
 function Get-PhysicalMemoryStatus {
     $mem = New-Object CodexMemoryStatus+MEMORYSTATUSEX
     $mem.dwLength = [System.Runtime.InteropServices.Marshal]::SizeOf($mem)
@@ -512,8 +543,8 @@ function Get-HdConfig {
 function Invoke-OsmosisMapWriter {
     param(
         [string]$osmosisWrapper,
-        [string]$inputFile,
-        [string]$polyFile,
+        [string[]]$inputFiles,
+        [string[]]$polyFiles,
         [string]$tagTransformFile,
         [string]$outputFile,
         [string]$tagConfFile,
@@ -529,32 +560,50 @@ function Invoke-OsmosisMapWriter {
         Remove-Item $outputFile -Force
     }
 
-    & $osmosisWrapper `
-        --read-pbf-fast "file=$inputFile" `
-        --bounding-polygon "file=$polyFile" `
-        --tag-transform "file=$tagTransformFile" `
-        --mapfile-writer "file=$outputFile" type=$writerType zoom-interval-conf=13,13,13,14,14,14 threads=$threads tag-conf-file="$tagConfFile"
+    $args = @()
+    for ($sourceIndex = 0; $sourceIndex -lt $inputFiles.Count; $sourceIndex++) {
+        $args += "--read-pbf-fast"
+        $args += "file=$($inputFiles[$sourceIndex])"
+        $args += "--bounding-polygon"
+        $args += "file=$($polyFiles[$sourceIndex])"
+        $args += "--tag-transform"
+        $args += "file=$tagTransformFile"
+
+        if ($sourceIndex -ge 1) {
+            $args += "--merge"
+        }
+    }
+
+    $args += "--mapfile-writer"
+    $args += "file=$outputFile"
+    $args += "type=$writerType"
+    $args += "zoom-interval-conf=13,13,13,14,14,14"
+    $args += "threads=$threads"
+    $args += "tag-conf-file=$tagConfFile"
+
+    & $osmosisWrapper @args
 
     return ($LASTEXITCODE -eq 0 -and (Test-Path $outputFile))
 }
 
 $file_index = 0
-$total_files = $PBF_FILES.Count
+$total_files = $MAP_ENTRIES.Count
 $stopwatch_total = [System.Diagnostics.Stopwatch]::StartNew()
 
-for ($i = 0; $i -lt $PBF_FILES.Count; $i++) {
+for ($i = 0; $i -lt $MAP_ENTRIES.Count; $i++) {
     $file_index++
-    $INPUT_FILE = $PBF_FILES[$i]
-    $POLY_FILE = $POLY_FILES[$i]
-    $ORIGINAL_NAME = $ORIGINAL_NAMES[$i]
-    $file_name = Split-Path $INPUT_FILE -Leaf
+    $entry = $MAP_ENTRIES[$i]
+    $INPUT_FILES = @($entry.PbfPaths)
+    $POLY_FILES = @($entry.PolyPaths)
+    $ORIGINAL_NAME = $entry.OriginalName
+    $file_name = if ($INPUT_FILES.Count -eq 1) { Split-Path $INPUT_FILES[0] -Leaf } else { "$($INPUT_FILES.Count) merged sources" }
 
     $pct = [math]::Floor(($i / $total_files) * 100)
     Write-Progress -Activity "Generating maps" -Status "[$file_index/$total_files] $file_name" -PercentComplete $pct
 
-    $inputInfo = Get-Item $INPUT_FILE
+    $inputSizeBytes = ($INPUT_FILES | ForEach-Object { (Get-Item $_).Length } | Measure-Object -Sum).Sum
     $memoryStatus = Get-PhysicalMemoryStatus
-    $autoConfig = Get-AutoMapWriterConfig $inputInfo.Length $memoryStatus.TotalBytes
+    $autoConfig = Get-AutoMapWriterConfig $inputSizeBytes $memoryStatus.TotalBytes
     $requestedWriterType = if ($MAP_WRITER_TYPE -eq "auto") { $autoConfig.WriterType } else { $MAP_WRITER_TYPE }
     $baseConfig = if ($requestedWriterType -eq "hd") { Get-HdConfig } else { $autoConfig }
     $effectiveThreads = if ($THREADS) { $THREADS } else { $baseConfig.Threads }
@@ -569,12 +618,13 @@ for ($i = 0; $i -lt $PBF_FILES.Count; $i++) {
 
     # Extract date from PBF file before processing
     Write-Host "Extracting date from PBF file..."
-    $date_string = Get-PbfDate $INPUT_FILE
+    $date_string = Get-CombinedPbfDate $INPUT_FILES
 
     Write-Host "=========================================="
     Write-Host "Processing [$file_index/$total_files]"
     Write-Host "  PBF File:      $file_name"
-    Write-Host "  Poly File:     $(Split-Path $POLY_FILE -Leaf)"
+    Write-Host "  Poly File:     $(if ($POLY_FILES.Count -eq 1) { Split-Path $POLY_FILES[0] -Leaf } else { "$($POLY_FILES.Count) matching polygons" })"
+    Write-Host "  Source Mode:   $(if ($INPUT_FILES.Count -eq 1) { 'single-region' } else { "multi-region blend ($($INPUT_FILES.Count) sources)" })"
     Write-Host "  Original Name: $ORIGINAL_NAME"
     Write-Host "  Country Code:  $COUNTRY_CODE"
     Write-Host "  Product Code:  $PRODUCT_CODE"
@@ -586,7 +636,7 @@ for ($i = 0; $i -lt $PBF_FILES.Count; $i++) {
     Write-Host "  Java Heap:     -Xms$effectiveJavaXms -Xmx$effectiveJavaXmx"
     if ($MAP_WRITER_TYPE -eq "auto") {
         if ($autoConfig.Reason -eq "ram_capped_by_total_ram") {
-            Write-Host "  Auto Decision: ram profile capped to 80% of installed RAM, then retry with hd if needed"
+            Write-Host "  Auto Decision: ram profile capped to about 2/3 of installed RAM, then retry with hd if needed"
         }
         elseif ($autoConfig.Reason -eq "fallback_to_hd_due_to_total_ram_cap") {
             Write-Host "  Auto Decision: total RAM too small for a useful ram profile, using hd"
@@ -603,8 +653,8 @@ for ($i = 0; $i -lt $PBF_FILES.Count; $i++) {
     Write-Host "Running osmosis..."
     $runSucceeded = Invoke-OsmosisMapWriter `
         -osmosisWrapper $OSMOSIS_WRAPPER `
-        -inputFile $INPUT_FILE `
-        -polyFile $POLY_FILE `
+        -inputFiles $INPUT_FILES `
+        -polyFiles $POLY_FILES `
         -tagTransformFile $TAG_TRANSFORM_FILE `
         -outputFile $OUTPUT_FILE `
         -tagConfFile $TAG_CONF_FILE `
@@ -626,8 +676,8 @@ for ($i = 0; $i -lt $PBF_FILES.Count; $i++) {
         Write-Warning "RAM writer attempt failed for $file_name. Retrying with hd..."
         $runSucceeded = Invoke-OsmosisMapWriter `
             -osmosisWrapper $OSMOSIS_WRAPPER `
-            -inputFile $INPUT_FILE `
-            -polyFile $POLY_FILE `
+            -inputFiles $INPUT_FILES `
+            -polyFiles $POLY_FILES `
             -tagTransformFile $TAG_TRANSFORM_FILE `
             -outputFile $OUTPUT_FILE `
             -tagConfFile $TAG_CONF_FILE `

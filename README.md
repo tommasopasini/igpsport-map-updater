@@ -144,6 +144,8 @@ python generate_maps_csv.py backup/
 
 The script reads the iGPSport filenames, figures out which geographic regions they cover, and finds the matching download URLs from [Geofabrik](https://download.geofabrik.de/). Review the output to verify the matched regions are correct.
 
+If one tile spans several Geofabrik subregions, the generator may now emit a small same-country multi-region blend instead of falling back to a whole-country extract.
+
 Alternatively, you can create `maps.csv` manually — see [CSV File Structure](#csv-file-structure).
 
 ### Step 2: Generate maps
@@ -163,8 +165,9 @@ chmod +x script.sh
 
 By default, the generator now uses an adaptive Mapsforge configuration:
 - It prefers the in-memory (`ram`) writer to avoid excessive temp-file IO.
-- It caps Java heap to about 80% of installed RAM.
+- It caps Java heap to about two thirds of installed RAM.
 - It retries once with the disk-backed (`hd`) writer if the RAM attempt fails.
+- It sizes RAM heuristics from the total source size for that map row, including multi-region blends.
 
 You can still override this manually with `MAP_WRITER_TYPE`, `MAP_WRITER_THREADS`, `JAVA_XMS`, `JAVA_XMX`, and `JAVA_TMP_DIR`.
 
@@ -188,8 +191,8 @@ The `maps.csv` file defines which regions to process. It has three columns:
 | Column | Description | Example |
 |--------|-------------|---------|
 | **Original filename** | The target IGPSPORT map filename format | `BR01002303102B83FO00N00E.map` |
-| **OSM BPF URL** | URL to download the OpenStreetMap PBF file | `https://download.geofabrik.de/south-america/brazil-latest.osm.pbf` |
-| **Poly URL** | URL to download the polygon boundary file | `https://download.geofabrik.de/europe/germany/hessen.poly` |
+| **OSM BPF URL** | One PBF URL, or several URLs separated by `;` for multi-region blends | `https://download.geofabrik.de/south-america/brazil-latest.osm.pbf` |
+| **Poly URL** | Matching polygon URL(s); use same order as PBF column, separated by `;` when needed | `https://download.geofabrik.de/europe/germany/hessen.poly` |
 
 ### Example CSV Content
 
@@ -197,6 +200,13 @@ The `maps.csv` file defines which regions to process. It has three columns:
 Original filename,OSM BPF URL,Poly URL
 DE07002303103AO23I01L029.map,https://download.geofabrik.de/europe/germany/hessen-latest.osm.pbf,https://download.geofabrik.de/europe/germany/hessen.poly
 DE090023031039R20Z03D02W.map,https://download.geofabrik.de/europe/germany/niedersachsen-latest.osm.pbf,https://download.geofabrik.de/europe/germany/niedersachsen.poly
+```
+
+Multi-region example:
+
+```csv
+Original filename,OSM BPF URL,Poly URL
+CZ03002604163DE24P00T00L.map,https://download.geofabrik.de/europe/czech-republic/karlovarsky-latest.osm.pbf;https://download.geofabrik.de/europe/czech-republic/plzensky-latest.osm.pbf;https://download.geofabrik.de/europe/czech-republic/ustecky-latest.osm.pbf,https://download.geofabrik.de/europe/czech-republic/karlovarsky.poly;https://download.geofabrik.de/europe/czech-republic/plzensky.poly;https://download.geofabrik.de/europe/czech-republic/ustecky.poly
 ```
 
 ### Where to Find Resources
@@ -385,7 +395,7 @@ All utilities use only the Python standard library unless noted otherwise.
 
 Automatically generates `maps.csv` from your original iGPSport map files. This is the recommended first step — see [Quick Start](#quick-start).
 
-iGPSport map filenames encode the country, region, and geographic bounding box in a specific format. This script decodes that information and matches each region against the [Geofabrik region index](https://download.geofabrik.de/) (512 regions worldwide) to find the correct PBF and polygon download URLs.
+iGPSport map filenames encode the country, region, and geographic bounding box in a specific format. This script decodes that information and matches each region against the [Geofabrik region index](https://download.geofabrik.de/) (512 regions worldwide) to find the correct PBF and polygon download URLs. When one tile crosses several same-country Geofabrik subregions, it can emit a small multi-region blend instead of falling back to a whole-country extract.
 
 ```bash
 # Generate maps.csv from your backup directory

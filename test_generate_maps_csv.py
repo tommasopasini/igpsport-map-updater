@@ -9,13 +9,16 @@ import pytest
 from generate_maps_csv import (
     base36_decode,
     bbox_area,
+    bbox_intersection,
     bbox_from_geometry,
     bbox_overlap_area,
     build_region_lookup,
     decode_geocode,
     find_best_match,
+    find_region_sources,
     parse_filename,
     pbf_url_to_poly_url,
+    rect_union_area,
     region_country_codes,
     tile_x_to_lon,
     tile_y_to_lat,
@@ -167,6 +170,14 @@ class TestBboxHelpers:
         box1 = (0, 0, 5, 5)
         box2 = (5, 0, 10, 5)
         assert bbox_overlap_area(box1, box2) == 0.0
+
+    def test_bbox_intersection(self):
+        assert bbox_intersection((0, 0, 10, 10), (5, 5, 12, 14)) == (5, 5, 10, 10)
+        assert bbox_intersection((0, 0, 5, 5), (5, 5, 6, 6)) is None
+
+    def test_rect_union_area(self):
+        rects = [(0, 0, 4, 4), (2, 0, 6, 4), (6, 0, 8, 2)]
+        assert rect_union_area(rects) == pytest.approx(28.0)
 
 
 # --- bbox_from_geometry ---
@@ -325,6 +336,42 @@ class TestRegionCountryCodes:
         lookup = build_region_lookup(regions)
         codes = region_country_codes(regions[1], lookup)
         assert codes == {"CZ"}
+
+
+class TestFindRegionSources:
+    def test_prefers_multi_region_blend_over_country_fallback(self):
+        map_bbox = (0.0, 0.0, 10.0, 10.0)
+        regions = [
+            _make_country("Czech Republic", "czech-republic", (0.0, 0.0, 10.0, 10.0), "CZ"),
+            _make_region("West", "west", (0.0, 0.0, 4.0, 10.0), parent="czech-republic"),
+            _make_region("Middle", "middle", (3.5, 0.0, 7.0, 10.0), parent="czech-republic"),
+            _make_region("East", "east", (6.5, 0.0, 10.0, 10.0), parent="czech-republic"),
+        ]
+
+        selection = find_region_sources(map_bbox, regions, country_code="CZ")
+
+        assert selection is not None
+        assert selection["mode"] == "multi"
+        assert {match["feature"]["properties"]["id"] for match in selection["matches"]} == {
+            "west",
+            "middle",
+            "east",
+        }
+        assert selection["coverage_ratio"] == pytest.approx(1.0)
+
+    def test_keeps_single_specific_region_when_already_good(self):
+        map_bbox = (7.7, 49.4, 10.3, 51.7)
+        regions = [
+            _make_country("Germany", "germany", (5.0, 47.0, 15.5, 55.0), "DE"),
+            _make_region("Hessen", "hessen", (7.7, 49.4, 10.3, 51.7)),
+            _make_region("NRW", "nrw", (5.5, 50.0, 9.5, 52.6)),
+        ]
+
+        selection = find_region_sources(map_bbox, regions, country_code="DE")
+
+        assert selection is not None
+        assert selection["mode"] == "single"
+        assert selection["matches"][0]["feature"]["properties"]["id"] == "hessen"
 
 
 # --- integration: parse real filenames and verify bounding boxes ---

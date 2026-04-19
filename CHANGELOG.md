@@ -10,14 +10,17 @@ This changelog documents notable changes made in this fork after diverging from 
 - Added project metadata and dependency management via `pyproject.toml`, `.python-version`, and `uv.lock`.
 - Added automated tests for the CSV generator in `test_generate_maps_csv.py`.
 - Added Python cache and pytest cache ignore rules to `.gitignore`.
+- Added option 3 / multi-region source blending for tiles that span several same-country Geofabrik subregions.
 
 ### Changed
 - Updated `script.ps1` and `script.sh` to make Mapsforge writer tuning configurable.
 - Changed the default writer behavior from fixed `hd` mode to adaptive `auto` mode.
 - Added RAM-first Mapsforge execution with automatic retry in `hd` mode if the RAM attempt fails.
-- Added adaptive Java heap sizing capped to about 80% of installed RAM.
+- Added adaptive Java heap sizing capped to about two thirds of installed RAM.
 - Reduced default thread pressure for larger extracts to avoid excessive memory and IO usage.
 - Updated the README to describe the new workflow, project setup, adaptive writer behavior, and troubleshooting guidance.
+- Updated `generate_maps_csv.py` so one `maps.csv` row can now contain semicolon-separated PBF/poly source lists.
+- Updated `script.ps1` and `script.sh` to download, clip, and merge multi-source rows before running the Mapsforge writer.
 
 ### Notes
 - The generated filename geocode is now based on the actual bounding box stored in the generated `.map` file, so it may differ slightly from the original vendor filename when the produced map coverage differs.

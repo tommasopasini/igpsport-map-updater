@@ -126,9 +126,62 @@ def bbox_overlap_area(bbox1, bbox2):
     return (max_lon - min_lon) * (max_lat - min_lat)
 
 
+def bbox_intersection(bbox1, bbox2):
+    """Return the overlapping bbox or None when there is no overlap."""
+    min_lon = max(bbox1[0], bbox2[0])
+    min_lat = max(bbox1[1], bbox2[1])
+    max_lon = min(bbox1[2], bbox2[2])
+    max_lat = min(bbox1[3], bbox2[3])
+
+    if min_lon >= max_lon or min_lat >= max_lat:
+        return None
+
+    return min_lon, min_lat, max_lon, max_lat
+
+
 def bbox_area(bbox):
     """Calculate the area of a bounding box."""
     return (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+
+
+def rect_union_area(rectangles):
+    """Calculate union area of axis-aligned rectangles."""
+    rects = [r for r in rectangles if r is not None]
+    if not rects:
+        return 0.0
+
+    xs = sorted({rect[0] for rect in rects} | {rect[2] for rect in rects})
+    area = 0.0
+
+    for i in range(len(xs) - 1):
+        x1 = xs[i]
+        x2 = xs[i + 1]
+        if x1 >= x2:
+            continue
+
+        intervals = []
+        for min_lon, min_lat, max_lon, max_lat in rects:
+            if min_lon < x2 and max_lon > x1:
+                intervals.append((min_lat, max_lat))
+
+        if not intervals:
+            continue
+
+        intervals.sort()
+        covered_y = 0.0
+        current_start, current_end = intervals[0]
+
+        for start, end in intervals[1:]:
+            if start <= current_end:
+                current_end = max(current_end, end)
+            else:
+                covered_y += current_end - current_start
+                current_start, current_end = start, end
+
+        covered_y += current_end - current_start
+        area += (x2 - x1) * covered_y
+
+    return area
 
 
 def pbf_url_to_poly_url(pbf_url):
@@ -185,6 +238,90 @@ def region_country_codes(region, region_lookup):
     return set()
 
 
+def region_country_metadata(region, region_lookup):
+    """Resolve country codes, root country id, and depth-to-country."""
+    props = region.get("properties", {})
+    current = region
+    depth = 0
+    visited = set()
+
+    while props:
+        iso_codes = props.get("iso3166-1:alpha2")
+        if iso_codes:
+            return {
+                "country_codes": set(iso_codes),
+                "country_id": props.get("id"),
+                "depth": depth,
+            }
+
+        parent_id = props.get("parent")
+        if not parent_id or parent_id in visited:
+            break
+
+        visited.add(parent_id)
+        parent = region_lookup.get(parent_id)
+        if not parent:
+            break
+
+        current = parent
+        props = current.get("properties", {})
+        depth += 1
+
+    return {
+        "country_codes": set(),
+        "country_id": None,
+        "depth": depth,
+    }
+
+
+def find_candidate_regions(map_bbox, regions, country_code=None):
+    """Build scored candidate regions for a map bbox."""
+    map_area = bbox_area(map_bbox)
+    if map_area == 0:
+        return []
+
+    region_lookup = build_region_lookup(regions)
+    candidates = []
+
+    for region in regions:
+        if "geometry" not in region or region["geometry"] is None:
+            continue
+
+        props = region["properties"]
+        if "pbf" not in props.get("urls", {}):
+            continue
+
+        region_bbox = bbox_from_geometry(region["geometry"])
+        overlap_bbox = bbox_intersection(map_bbox, region_bbox)
+        overlap = bbox_area(overlap_bbox) if overlap_bbox else 0.0
+        overlap_ratio = overlap / map_area
+
+        if overlap_ratio < 0.15:
+            continue
+
+        country_meta = region_country_metadata(region, region_lookup)
+        candidates.append({
+            "feature": region,
+            "overlap_ratio": overlap_ratio,
+            "region_area": bbox_area(region_bbox),
+            "region_bbox": region_bbox,
+            "intersection_bbox": overlap_bbox,
+            "country_codes": country_meta["country_codes"],
+            "country_id": country_meta["country_id"],
+            "depth": country_meta["depth"],
+        })
+
+    if country_code:
+        same_country = [
+            candidate for candidate in candidates
+            if country_code in candidate["country_codes"]
+        ]
+        if same_country:
+            return same_country
+
+    return candidates
+
+
 def find_best_match(map_bbox, regions, country_code=None):
     """Find the best matching Geofabrik region for a bounding box.
 
@@ -193,57 +330,106 @@ def find_best_match(map_bbox, regions, country_code=None):
     If a country code is available from the original filename, prefer regions
     whose Geofabrik parent chain resolves to that same country.
     """
-    map_area = bbox_area(map_bbox)
-    if map_area == 0:
-        return None
-
-    region_lookup = build_region_lookup(regions)
-    candidates = []
-
-    for region in regions:
-        if "geometry" not in region or region["geometry"] is None:
-            continue
-        props = region["properties"]
-        if "pbf" not in props.get("urls", {}):
-            continue
-
-        region_bbox = bbox_from_geometry(region["geometry"])
-        overlap = bbox_overlap_area(map_bbox, region_bbox)
-        overlap_ratio = overlap / map_area
-
-        if overlap_ratio < 0.5:
-            continue
-
-        region_area = bbox_area(region_bbox)
-        candidates.append({
-            "feature": region,
-            "overlap_ratio": overlap_ratio,
-            "region_area": region_area,
-            "region_bbox": region_bbox,
-            "country_codes": region_country_codes(region, region_lookup),
-        })
+    candidates = [
+        candidate for candidate in find_candidate_regions(map_bbox, regions, country_code)
+        if candidate["overlap_ratio"] >= 0.5
+    ]
 
     if not candidates:
         return None
 
-    if country_code:
-        same_country = [
-            c for c in candidates
-            if country_code in c["country_codes"]
-        ]
-        if same_country:
-            candidates = same_country
-
     # Sort by: high overlap ratio first, then smallest region (most specific)
-    candidates.sort(key=lambda c: (-c["overlap_ratio"], c["region_area"]))
+    candidates.sort(key=lambda c: (-c["overlap_ratio"], -c["depth"], c["region_area"]))
 
     # Among candidates with >90% overlap, prefer the smallest region
     good = [c for c in candidates if c["overlap_ratio"] > 0.9]
     if good:
-        good.sort(key=lambda c: c["region_area"])
+        good.sort(key=lambda c: (-c["depth"], c["region_area"]))
         return good[0]
 
     return candidates[0]
+
+
+def find_region_combo(map_bbox, candidates, max_regions=4, coverage_target=0.98):
+    """Greedily pick a small region set that covers most of the map bbox."""
+    map_area = bbox_area(map_bbox)
+    if map_area == 0:
+        return None
+
+    pool = [
+        candidate for candidate in candidates
+        if candidate["depth"] > 0 and candidate["intersection_bbox"] is not None
+    ]
+    if len(pool) < 2:
+        return None
+
+    selected = []
+    covered_rects = []
+    covered_area = 0.0
+    remaining = list(pool)
+
+    while remaining and len(selected) < max_regions:
+        best = None
+        best_gain = 0.0
+
+        for candidate in remaining:
+            new_area = rect_union_area(covered_rects + [candidate["intersection_bbox"]])
+            gain = new_area - covered_area
+            if gain > best_gain + 1e-12:
+                best = candidate
+                best_gain = gain
+            elif best is not None and abs(gain - best_gain) <= 1e-12:
+                best_key = (best["overlap_ratio"], best["depth"], -best["region_area"])
+                candidate_key = (candidate["overlap_ratio"], candidate["depth"], -candidate["region_area"])
+                if candidate_key > best_key:
+                    best = candidate
+
+        if best is None or best_gain <= 0:
+            break
+
+        selected.append(best)
+        covered_rects.append(best["intersection_bbox"])
+        covered_area = rect_union_area(covered_rects)
+        remaining.remove(best)
+
+        if covered_area / map_area >= coverage_target:
+            break
+
+    coverage_ratio = covered_area / map_area
+    if len(selected) < 2:
+        return None
+
+    return {
+        "mode": "multi",
+        "matches": selected,
+        "coverage_ratio": coverage_ratio,
+    }
+
+
+def find_region_sources(map_bbox, regions, country_code=None):
+    """Choose one or more source regions for a map tile."""
+    candidates = find_candidate_regions(map_bbox, regions, country_code)
+    if not candidates:
+        return None
+
+    best_single = find_best_match(map_bbox, regions, country_code)
+    best_combo = find_region_combo(map_bbox, candidates)
+
+    if best_combo is not None and best_single is not None:
+        combo_ratio = best_combo["coverage_ratio"]
+        single_ratio = best_single["overlap_ratio"]
+
+        if best_single["depth"] == 0 and combo_ratio >= 0.85:
+            return best_combo
+
+        if combo_ratio >= max(0.92, single_ratio + 0.03):
+            return best_combo
+
+    return {
+        "mode": "single",
+        "matches": [best_single],
+        "coverage_ratio": best_single["overlap_ratio"],
+    }
 
 
 def main():
@@ -295,27 +481,38 @@ def main():
     csv_rows = []
     for mf in map_files:
         print(f"Matching {mf['filename']}...")
-        match = find_best_match(mf["bbox"], regions, country_code=mf["country_code"])
+        selection = find_region_sources(mf["bbox"], regions, country_code=mf["country_code"])
 
-        if match is None:
+        if selection is None:
             print(f"  WARNING: No matching region found! Skipping.")
             continue
 
-        props = match["feature"]["properties"]
-        pbf_url = props["urls"]["pbf"]
-        poly_url = pbf_url_to_poly_url(pbf_url)
-        overlap_pct = match["overlap_ratio"] * 100
+        matches = selection["matches"]
+        pbf_urls = [match["feature"]["properties"]["urls"]["pbf"] for match in matches]
+        poly_urls = [pbf_url_to_poly_url(pbf_url) for pbf_url in pbf_urls]
+        coverage_pct = selection["coverage_ratio"] * 100
 
-        print(f"  Matched: {props['name']} (id: {props['id']}, overlap: {overlap_pct:.1f}%)")
-        print(f"  PBF:  {pbf_url}")
-        print(f"  Poly: {poly_url}")
+        if selection["mode"] == "multi":
+            region_label = ", ".join(match["feature"]["properties"]["id"] for match in matches)
+            print(
+                f"  Matched: multi-region blend ({len(matches)} regions, coverage: {coverage_pct:.1f}%)"
+            )
+            print(f"  Regions: {region_label}")
+        else:
+            props = matches[0]["feature"]["properties"]
+            print(f"  Matched: {props['name']} (id: {props['id']}, overlap: {coverage_pct:.1f}%)")
+
+        for pbf_url in pbf_urls:
+            print(f"  PBF:  {pbf_url}")
+        for poly_url in poly_urls:
+            print(f"  Poly: {poly_url}")
         print()
 
         csv_rows.append({
             "filename": mf["filename"],
-            "pbf_url": pbf_url,
-            "poly_url": poly_url,
-            "region_name": props["name"],
+            "pbf_url": ";".join(pbf_urls),
+            "poly_url": ";".join(poly_urls),
+            "selection_mode": selection["mode"],
         })
 
     if not csv_rows:
