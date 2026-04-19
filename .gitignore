@@ -3,6 +3,8 @@ download
 output
 tmp
 backup
+input
+maps.csv
 __pycache__/
 .pytest_cache/
 *.py[cod]
