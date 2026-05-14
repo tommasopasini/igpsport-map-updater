@@ -4,6 +4,11 @@ This changelog documents notable changes made in this fork after diverging from 
 
 ## Unreleased
 
+### Fixed
+- Fixed a variable-name collision that broke multi-tile runs after the first tile: the outer poly-group array in `script.sh` is now `POLY_GROUPS`, distinct from the per-tile `POLY_FILES` it expands into. Pre-fix, iteration 2+ produced `--bounding-polygon "file="` and aborted osmosis.
+- Fixed silent failure when the Mapsforge writer jar download 404s: `curl` now uses `-f` so the build aborts loudly instead of saving a "Not Found" body that later causes a confusing "Task type mapfile-writer doesn't exist" osmosis error.
+- Forced LF line endings on `*.sh` via `.gitattributes` so checkouts on systems with `core.autocrlf=true` (e.g. WSL) don't reintroduce CRLF and break `#!/bin/bash\r`.
+
 ### Added
 - Added `ATTRIBUTION.md` with OpenStreetMap attribution text and sharing guidance for generated maps.
 - Added an optional Google Drive link for separately shared unofficial generated maps.

@@ -1,0 +1,3 @@
+# Force LF for shell scripts so WSL checkouts (core.autocrlf=true) don't
+# end up with CRLF, which makes `#!/bin/bash\r` fail to execute.
+*.sh text eol=lf

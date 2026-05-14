@@ -36,7 +36,7 @@ if [ ! -f "$MAPSFORGE_WRITER_JAR" ]; then
     echo "Mapsforge writer plugin not found. Downloading version $MAPSFORGE_WRITER_VERSION..."
     MAPSFORGE_URL="https://github.com/mapsforge/mapsforge/releases/download/${MAPSFORGE_WRITER_VERSION}/mapsforge-map-writer-${MAPSFORGE_WRITER_VERSION}-jar-with-dependencies.jar"
     
-    curl -sL -o "$MAPSFORGE_WRITER_JAR" "$MAPSFORGE_URL"
+    curl -fsL -o "$MAPSFORGE_WRITER_JAR" "$MAPSFORGE_URL"
     
     echo "Mapsforge writer plugin installed successfully."
     echo ""
@@ -84,7 +84,7 @@ fi
 # Read CSV file and download files
 echo "Reading maps.csv..."
 declare -a PBF_FILES=()
-declare -a POLY_FILES=()
+declare -a POLY_GROUPS=()
 declare -a ORIGINAL_NAMES=()
 
 line_num=0
@@ -145,7 +145,7 @@ while IFS=',' read -r original_name pbf_url poly_url; do
     done
 
     PBF_FILES+=("$(IFS=';'; echo "${pbf_paths[*]}")")
-    POLY_FILES+=("$(IFS=';'; echo "${poly_paths[*]}")")
+    POLY_GROUPS+=("$(IFS=';'; echo "${poly_paths[*]}")")
     ORIGINAL_NAMES+=("$original_name")
     
 done < "$CSV_FILE"
@@ -577,7 +577,7 @@ file_index=0
 for i in "${!PBF_FILES[@]}"; do
     file_index=$((file_index + 1))
     IFS=';' read -r -a INPUT_FILES <<< "${PBF_FILES[$i]}"
-    IFS=';' read -r -a POLY_FILES <<< "${POLY_FILES[$i]}"
+    IFS=';' read -r -a POLY_FILES <<< "${POLY_GROUPS[$i]}"
     ORIGINAL_NAME="${ORIGINAL_NAMES[$i]}"
     if [ "${#INPUT_FILES[@]}" -eq 1 ]; then
         file_name=$(basename "${INPUT_FILES[0]}")

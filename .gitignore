@@ -9,3 +9,5 @@ maps.csv
 __pycache__/
 .pytest_cache/
 *.py[cod]
+*.docx
+*:Zone.Identifier
