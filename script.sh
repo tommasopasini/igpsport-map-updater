@@ -60,6 +60,7 @@ TAG_TRANSFORM_FILE="$SCRIPT_DIR/tag-igpsport-transform.xml"
 THREADS="${MAP_WRITER_THREADS:-}"
 MAP_WRITER_TYPE="${MAP_WRITER_TYPE:-auto}"
 MAP_ALLOW_HD_FALLBACK="${MAP_ALLOW_HD_FALLBACK:-}"
+MAP_RAM_HEAP_FACTOR="${MAP_RAM_HEAP_FACTOR:-20}"
 RESUME_MODE="${MAP_RESUME:-}"
 TMP_DIR="${JAVA_TMP_DIR:-$SCRIPT_DIR/tmp}"
 JAVA_XMS="${JAVA_XMS:-}"
@@ -170,6 +171,7 @@ else
 fi
 echo "  Java tmpdir:  $TMP_DIR"
 echo "  HD Fallback:  $(if [ -n "$MAP_ALLOW_HD_FALLBACK" ]; then echo "enabled"; else echo "disabled by default"; fi)"
+echo "  RAM heap factor: ${MAP_RAM_HEAP_FACTOR}x clipped PBF (auto picks hd below this)"
 echo "  Resume:       $(if [ -n "$RESUME_MODE" ]; then echo "skip existing final maps"; else echo "off"; fi)"
 echo ""
 
@@ -494,6 +496,7 @@ get_auto_map_writer_config() {
     local max_auto_heap_bytes=$((total_physical_bytes * 2 / 3))
     local max_auto_heap_string
     max_auto_heap_string=$(bytes_to_heap_string "$max_auto_heap_bytes")
+    local heap_factor="${MAP_RAM_HEAP_FACTOR:-20}"
 
     if [ "$pbf_size_bytes" -le $((350 * 1024 * 1024)) ]; then
         preferred="ram|2|2g|$max_auto_heap_string"
@@ -508,6 +511,26 @@ get_auto_map_writer_config() {
     IFS='|' read -r preferred_writer preferred_threads preferred_java_xms preferred_java_xmx <<< "$preferred"
 
     requested_heap_bytes=$(heap_string_to_bytes "$preferred_java_xmx")
+
+    # Compute the Xmx the ram path would actually use after the 2/3-RAM cap.
+    local effective_xmx_bytes
+    if [ "$max_auto_heap_bytes" -lt "$min_ram_heap_bytes" ]; then
+        effective_xmx_bytes="$max_auto_heap_bytes"
+    elif [ "$requested_heap_bytes" -gt "$max_auto_heap_bytes" ]; then
+        effective_xmx_bytes="$max_auto_heap_bytes"
+    else
+        effective_xmx_bytes="$requested_heap_bytes"
+    fi
+
+    # The Mapsforge ram writer empirically uses ~20x clipped PBF bytes for
+    # OSM working set. If the heap can't cover heap_factor x pbf_size_bytes,
+    # the ram attempt will OOM; pick hd directly to skip the wasted run.
+    local required_heap_bytes=$((pbf_size_bytes * heap_factor))
+    if [ "$effective_xmx_bytes" -lt "$required_heap_bytes" ]; then
+        IFS='|' read -r hd_writer hd_threads hd_xms hd_xmx <<< "$(get_hd_config "$total_physical_bytes")"
+        echo "$hd_writer|$hd_threads|$hd_xms|$hd_xmx|pbf_too_large_for_ram_pick_hd"
+        return
+    fi
 
     if [ "$max_auto_heap_bytes" -lt "$min_ram_heap_bytes" ]; then
         echo "ram|1|$max_auto_heap_string|$max_auto_heap_string|ram_limited_by_total_ram"
@@ -529,7 +552,22 @@ get_auto_map_writer_config() {
 }
 
 get_hd_config() {
-    echo "hd|1|2g|8g"
+    local total_physical_bytes="${1:-0}"
+    local default_xmx_bytes=$((8 * 1024 * 1024 * 1024))
+    local xmx_bytes="$default_xmx_bytes"
+    if [ "$total_physical_bytes" -gt 0 ]; then
+        local cap=$((total_physical_bytes * 2 / 3))
+        if [ "$cap" -lt "$xmx_bytes" ]; then
+            xmx_bytes="$cap"
+        fi
+    fi
+    local xmx_string
+    xmx_string=$(bytes_to_heap_string "$xmx_bytes")
+    local xms_string="2g"
+    if [ "$(heap_string_to_bytes "$xms_string")" -gt "$xmx_bytes" ]; then
+        xms_string="$xmx_string"
+    fi
+    echo "hd|1|$xms_string|$xmx_string"
 }
 
 run_osmosis_map_writer() {
@@ -586,38 +624,22 @@ for i in "${!PBF_FILES[@]}"; do
         file_name="${#INPUT_FILES[@]} merged sources"
         poly_name="${#POLY_FILES[@]} matching polygons"
     fi
-    pbf_size_bytes=0
+    # Sum of source PBF sizes BEFORE osmium pre-clip (informational; the
+    # writer-type / heap decision below uses the post-clip size instead).
+    pbf_size_source_bytes=0
     for pbf_file in "${INPUT_FILES[@]}"; do
         file_size=$(wc -c < "$pbf_file" | tr -d ' ')
-        pbf_size_bytes=$((pbf_size_bytes + file_size))
+        pbf_size_source_bytes=$((pbf_size_source_bytes + file_size))
     done
-    pbf_size_mb=$((pbf_size_bytes / 1024 / 1024))
+    pbf_size_source_mb=$((pbf_size_source_bytes / 1024 / 1024))
     total_physical_bytes=$(get_total_physical_memory_bytes)
     total_physical_gb=$(awk -v total="$total_physical_bytes" 'BEGIN { printf("%.2f", total / 1024 / 1024 / 1024) }')
-    IFS='|' read -r auto_writer_type auto_threads auto_java_xms auto_java_xmx auto_reason <<< "$(get_auto_map_writer_config "$pbf_size_bytes" "$total_physical_bytes")"
-    requested_writer_type="$MAP_WRITER_TYPE"
-    if [ "$requested_writer_type" = "auto" ]; then
-        requested_writer_type="$auto_writer_type"
-    fi
-    if [ "$requested_writer_type" = "hd" ]; then
-        IFS='|' read -r base_writer_type base_threads base_java_xms base_java_xmx <<< "$(get_hd_config)"
-    else
-        base_writer_type="$auto_writer_type"
-        base_threads="$auto_threads"
-        base_java_xms="$auto_java_xms"
-        base_java_xmx="$auto_java_xmx"
-    fi
-    effective_threads="${THREADS:-$base_threads}"
-    effective_java_xms="${JAVA_XMS:-$base_java_xms}"
-    effective_java_xmx="${JAVA_XMX:-$base_java_xmx}"
-    
-    # Extract country code from original filename (first 2 characters)
+
+    # Extract country/product codes and tile bbox from the original filename.
     COUNTRY_CODE="${ORIGINAL_NAME:0:2}"
-    
-    # Extract product code from original filename (characters 2-5, 0-indexed)
     PRODUCT_CODE="${ORIGINAL_NAME:2:4}"
     get_original_tile_bbox "$ORIGINAL_NAME"
-    
+
     # Extract date from PBF file before processing
     echo "Extracting date from PBF file..."
     date_string=$(extract_combined_pbf_date "${INPUT_FILES[@]}")
@@ -625,7 +647,7 @@ for i in "${!PBF_FILES[@]}"; do
     if [ -n "$RESUME_MODE" ]; then
         existing_output=$(find_existing_output_map "$OUTPUT_DIR" "$COUNTRY_CODE" "$PRODUCT_CODE" "$date_string" "$TILE_GEOCODE" || true)
     fi
-    
+
     echo "=========================================="
     echo "Processing [$file_index/${#PBF_FILES[@]}]"
     echo "  PBF File:      $file_name"
@@ -656,20 +678,8 @@ for i in "${!PBF_FILES[@]}"; do
     fi
     echo "  Output BBox:   minLat=$BBOX_MIN_LAT minLng=$BBOX_MIN_LON maxLat=$BBOX_MAX_LAT maxLng=$BBOX_MAX_LON  ($BBOX_SOURCE)"
     echo "  PBF Date:      $date_string"
-    echo "  PBF Size:      ${pbf_size_mb} MB"
+    echo "  PBF Size:      ${pbf_size_source_mb} MB (source, before pre-clip)"
     echo "  Total RAM:     ${total_physical_gb} GB"
-    echo "  Writer Type:   $requested_writer_type"
-    echo "  Threads:       $effective_threads"
-    echo "  Java Heap:     -Xms$effective_java_xms -Xmx$effective_java_xmx"
-    if [ "$MAP_WRITER_TYPE" = "auto" ]; then
-        if [ "$auto_reason" = "ram_capped_by_total_ram" ]; then
-            echo "  Auto Decision: ram profile capped to about 2/3 of installed RAM"
-        elif [ "$auto_reason" = "ram_limited_by_total_ram" ]; then
-            echo "  Auto Decision: total RAM below preferred profile, using capped ram"
-        else
-            echo "  Auto Decision: ram writer only; set MAP_WRITER_TYPE=hd or MAP_ALLOW_HD_FALLBACK=1 to use hd"
-        fi
-    fi
     echo "=========================================="
 
     if [ -n "$existing_output" ]; then
@@ -678,6 +688,8 @@ for i in "${!PBF_FILES[@]}"; do
         continue
     fi
 
+    # Pre-clip BEFORE the writer-type / heap decision so it uses the actual
+    # working-set size, not the inflated source PBF size.
     if command -v osmium >/dev/null 2>&1; then
         echo "Pre-clipping source PBF(s) to tile bbox with osmium..."
         EXTRACTED_INPUT_FILES=()
@@ -708,6 +720,51 @@ for i in "${!PBF_FILES[@]}"; do
         echo "         Install osmium-tool for ~10x faster runs (apt install osmium-tool)."
     fi
 
+    # Recompute size from (possibly clipped) inputs and pick writer type.
+    pbf_size_bytes=0
+    for pbf_file in "${INPUT_FILES[@]}"; do
+        file_size=$(wc -c < "$pbf_file" | tr -d ' ')
+        pbf_size_bytes=$((pbf_size_bytes + file_size))
+    done
+    pbf_size_mb=$((pbf_size_bytes / 1024 / 1024))
+    IFS='|' read -r auto_writer_type auto_threads auto_java_xms auto_java_xmx auto_reason <<< "$(get_auto_map_writer_config "$pbf_size_bytes" "$total_physical_bytes")"
+    requested_writer_type="$MAP_WRITER_TYPE"
+    if [ "$requested_writer_type" = "auto" ]; then
+        requested_writer_type="$auto_writer_type"
+    fi
+    if [ "$requested_writer_type" = "hd" ]; then
+        IFS='|' read -r base_writer_type base_threads base_java_xms base_java_xmx <<< "$(get_hd_config "$total_physical_bytes")"
+    else
+        base_writer_type="$auto_writer_type"
+        base_threads="$auto_threads"
+        base_java_xms="$auto_java_xms"
+        base_java_xmx="$auto_java_xmx"
+    fi
+    effective_threads="${THREADS:-$base_threads}"
+    effective_java_xms="${JAVA_XMS:-$base_java_xms}"
+    effective_java_xmx="${JAVA_XMX:-$base_java_xmx}"
+
+    echo "  PBF Size:      ${pbf_size_mb} MB (clipped working set)"
+    echo "  Writer Type:   $requested_writer_type"
+    echo "  Threads:       $effective_threads"
+    echo "  Java Heap:     -Xms$effective_java_xms -Xmx$effective_java_xmx"
+    if [ "$MAP_WRITER_TYPE" = "auto" ]; then
+        case "$auto_reason" in
+            pbf_too_large_for_ram_pick_hd)
+                echo "  Auto Decision: clipped PBF too large for safe ram heap (factor ${MAP_RAM_HEAP_FACTOR:-20}x); using hd writer"
+                ;;
+            ram_capped_by_total_ram)
+                echo "  Auto Decision: ram profile capped to about 2/3 of installed RAM"
+                ;;
+            ram_limited_by_total_ram)
+                echo "  Auto Decision: total RAM below preferred profile, using capped ram"
+                ;;
+            *)
+                echo "  Auto Decision: ram writer; MAP_ALLOW_HD_FALLBACK=1 enables hd retry on OOM"
+                ;;
+        esac
+    fi
+
     OUTPUT_FILE="$OUTPUT_DIR/out_$file_index.map"
 
     echo "Running osmosis..."
@@ -719,7 +776,7 @@ for i in "${!PBF_FILES[@]}"; do
     final_java_xmx="$effective_java_xmx"
 
     if [ $run_status -ne 0 ] && [ "$MAP_WRITER_TYPE" = "auto" ] && [ "$requested_writer_type" = "ram" ] && [ -n "$MAP_ALLOW_HD_FALLBACK" ]; then
-        IFS='|' read -r hd_writer_type hd_threads hd_java_xms hd_java_xmx <<< "$(get_hd_config)"
+        IFS='|' read -r hd_writer_type hd_threads hd_java_xms hd_java_xmx <<< "$(get_hd_config "$total_physical_bytes")"
         fallback_threads="${THREADS:-$hd_threads}"
         fallback_java_xms="${JAVA_XMS:-$hd_java_xms}"
         fallback_java_xmx="${JAVA_XMX:-$hd_java_xmx}"

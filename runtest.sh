@@ -16,20 +16,21 @@ cd "$SCRIPT_DIR"
 # =============================================================================
 
 # Short label for this trial. Becomes part of the log filename. No spaces.
-TRIAL_LABEL="${TRIAL_LABEL:-h3b-stock-bbox}"
+TRIAL_LABEL="${TRIAL_LABEL:-rebuild-5-stock-bbox}"
 
 # Free-form notes recorded in the log header.
-TRIAL_NOTES="${TRIAL_NOTES:-H3(b): --bounding-box inherits stock map bbox (10.360/12.500/45.655/47.110 for IT17). Writer 0.27.0, osmium pre-clip.}"
+TRIAL_NOTES="${TRIAL_NOTES:-Rebuild the 5 non-IT17 tiles with stock-bbox inheritance. IT17 already correct (canonical name in output/), skipped via --resume. Pre-fix outputs were manually renamed with a trailing _ as backups, so they neither match the resume key nor get overwritten.}"
 
 # Maps directory passed to run.sh. The IT17 sample lives in input/.
 MAPS_DIR="${MAPS_DIR:-input}"
 
 # Tiles to force-rebuild this trial (deleted from output/ before the run).
-# Resume mode is on, so any other tile in output/ will be skipped.
-# Use the canonical generated filename (no trailing underscore).
-TRIAL_RM_TILES=(
-    "output/IT17002605103CB27X01D01C.map"
-)
+# Resume mode is on, so any output tile matching the canonical name
+# `{country}{product}{date}{geocode}.map` (no trailing underscore) is
+# skipped. Leave this empty for the rebuild-5 run — the 5 pre-fix
+# outputs were renamed with `_` backups and so neither match the
+# resume key nor get overwritten.
+TRIAL_RM_TILES=()
 
 # Pass --resume to run.sh (recommended: skips the 5 other tiles).
 USE_RESUME="${USE_RESUME:-1}"
@@ -47,7 +48,14 @@ GENERATED_MAP="${GENERATED_MAP:-output/IT17002605103CB27X01D01C.map}"
 export MAP_WRITER_TYPE="${MAP_WRITER_TYPE:-auto}"
 
 # Allow auto mode to fall back to hd writer if ram OOMs. Empty = disabled.
-export MAP_ALLOW_HD_FALLBACK="${MAP_ALLOW_HD_FALLBACK:-}"
+# Enabled here because Veneto/Lombardia may exceed 8 GB RAM even after the
+# osmium pre-clip; hd writer takes longer but won't OOM.
+export MAP_ALLOW_HD_FALLBACK="${MAP_ALLOW_HD_FALLBACK:-1}"
+
+# Auto mode picks hd directly when heap < HEAP_FACTOR x clipped-PBF bytes.
+# Empirically the ram writer uses ~20x clipped PBF bytes; lower = more
+# aggressive ram attempts (faster when it works), higher = more hd fallback.
+export MAP_RAM_HEAP_FACTOR="${MAP_RAM_HEAP_FACTOR:-20}"
 
 # Threads for mapfile-writer tile-write phase. Empty = auto.
 # Note (from INVESTIGATION.md): only the write phase parallelises; read/clip
@@ -87,6 +95,7 @@ LOG_FILE="$LOG_DIR/${TS}-${TRIAL_LABEL}.log"
     echo "USE_RESUME:             $USE_RESUME"
     echo "MAP_WRITER_TYPE:        $MAP_WRITER_TYPE"
     echo "MAP_ALLOW_HD_FALLBACK:  $MAP_ALLOW_HD_FALLBACK"
+    echo "MAP_RAM_HEAP_FACTOR:    $MAP_RAM_HEAP_FACTOR"
     echo "MAP_WRITER_THREADS:     ${MAP_WRITER_THREADS:-auto}"
     echo "JAVA_XMS / JAVA_XMX:    ${JAVA_XMS:-auto} / ${JAVA_XMX:-auto}"
     echo "JAVA_TMP_DIR:           $JAVA_TMP_DIR"

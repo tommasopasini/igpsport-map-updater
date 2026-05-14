@@ -43,6 +43,7 @@ This changelog documents notable changes made in this fork after diverging from 
 - Updated `generate_maps_csv.py` so one `maps.csv` row can now contain semicolon-separated PBF/poly source lists.
 - Updated `script.ps1` and `script.sh` to download, clip, and merge multi-source rows before running the Mapsforge writer.
 - Disabled automatic HD fallback by default; set `MAP_ALLOW_HD_FALLBACK=1` to opt back in.
+- Auto writer-type decision now runs on the post-`osmium` clipped PBF size (the actual writer working set), not the inflated source PBF. Added `MAP_RAM_HEAP_FACTOR` (default 20): when the capped ram heap is less than `factor x clipped-PBF-bytes`, auto picks `hd` directly instead of attempting a doomed ram run. The `hd` profile now also caps `-Xmx` to about 2/3 of installed RAM so it doesn't ask for more memory than the host has.
 - Increased the 350-700 MB PBF auto profile to use the capped RAM heap instead of a fixed 8 GB heap.
 - Added original tile bounding-box clipping so broad Geofabrik sources do not generate duplicate macro-region maps for several product codes.
 - Tightened resume mode to skip only exact expected output filenames, including the original tile geocode.
