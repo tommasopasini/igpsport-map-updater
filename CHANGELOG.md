@@ -26,6 +26,9 @@ This changelog documents notable changes made in this fork after diverging from 
 - Added option 3 / multi-region source blending for tiles that span several same-country Geofabrik subregions.
 - Added an `osmium extract` pre-clip step before the osmosis pipeline that trims each source PBF to the tile bbox, caching the result under `download/{source}-{TILE_GEOCODE}.osm.pbf`. ~10× speedup on a 8 GB / 10-core WSL host for the IT17 tile (about 13 min vs ~3 h). Falls back to the full PBF if `osmium-tool` is not installed.
 - Added `misc/read_map_bbox.py` helper used by `script.sh` to read the header bbox of a stock map.
+- Added `misc/dump_mapheader.py` helper for inspecting Mapsforge `.map` headers.
+- Added `runtest.sh` wrapper around `run.sh` with all runtime knobs and a timestamped log under `tmp/trials/`.
+- Added `INVESTIGATION.md` documenting the BiNavi Air alignment investigation, hypotheses, and conclusion.
 
 ### Changed
 - Made the end-to-end package workflow resumable for already downloaded official input maps.
