@@ -9,6 +9,7 @@ This changelog documents notable changes made in this fork after diverging from 
 - Fixed a variable-name collision that broke multi-tile runs after the first tile: the outer poly-group array in `script.sh` is now `POLY_GROUPS`, distinct from the per-tile `POLY_FILES` it expands into. Pre-fix, iteration 2+ produced `--bounding-polygon "file="` and aborted osmosis.
 - Fixed silent failure when the Mapsforge writer jar download 404s: `curl` now uses `-f` so the build aborts loudly instead of saving a "Not Found" body that later causes a confusing "Task type mapfile-writer doesn't exist" osmosis error.
 - Forced LF line endings on `*.sh` via `.gitattributes` so checkouts on systems with `core.autocrlf=true` (e.g. WSL) don't reintroduce CRLF and break `#!/bin/bash\r`.
+- Fixed `MAP_ALLOW_HD_FALLBACK` being silently skipped: `set -e` aborted `script.sh` the moment the ram-writer osmosis call returned non-zero, so the hd-retry block below it never executed. The call is now wrapped so its exit code is captured instead.
 
 ### Added
 - Added `ATTRIBUTION.md` with OpenStreetMap attribution text and sharing guidance for generated maps.
