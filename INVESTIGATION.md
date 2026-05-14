@@ -22,17 +22,21 @@ Note: BiNavi Air is **not** in the upstream README's "Supported Products" list (
 | `output/IT17002605103CB27X01D01C_.map` | Generated with writer **0.27.0** (the offset-on-device build) |
 | `output/IT17002605103CB27X01D01C.map` | Generated with writer **0.16.0** (proved bytewise-identical to 0.27 at tile bodies) |
 
-`tmp/run_it17_osmium.log` has the last successful build log.
+Trial run logs land under `tmp/trials/` (timestamped, kept across runs) when the rebuild goes through `runtest.sh`.
 
 ## Tools written during investigation
 
-In `/tmp/` (not in the repo):
+Committed into the repo:
 
-- `/tmp/dump_mapheader.py` — parses the Mapsforge `.map` file header (magic, version, bbox, projection, flags, tile size, zoom intervals, `created by`). Reliable.
-- `/tmp/decode_first_poi.py` — finds the first non-empty tile and decodes its first POI. **Has a bug** in way / coord parsing — useful for header-level checks only.
-- `/tmp/decode_way_at_tile.py` — decodes way at a specific tile (x, y). **Also produces wrong lat/lon** for way nodes (off by ~50 km, likely due to missing data-block prefix or encoding-flag handling). The bytewise comparison it enables, however, *is* reliable.
+- `misc/dump_mapheader.py` — parses the Mapsforge `.map` file header (magic, version, bbox, projection, flags, tile size, zoom intervals, `created by`). Reliable.
+- `misc/read_map_bbox.py` — minimal header parser that prints just the bbox; used by `script.sh` for stock-bbox inheritance.
+- `misc/patch_map_bbox.py` — overwrites the bbox field of a target `.map` with the bbox from a reference map. Used to work around Mapsforge 0.27 header bbox shrinkage (see followup section below).
 
-If we want a programmatic Cruiser substitute we need to debug the way parser. The Mapsforge binary format spec is at <https://github.com/mapsforge/mapsforge/blob/master/docs/Specification-Binary-Map-File.md>.
+Abandoned in `/tmp/` during the session (not committed; no longer present):
+
+- `decode_first_poi.py` and `decode_way_at_tile.py` — exploratory POI/way decoders. Both produced wrong lat/lon for way nodes (off by ~50 km, likely missing data-block prefix or encoding-flag handling) but enabled the reliable bytewise comparison that ruled out H2.
+
+If we want a programmatic Cruiser substitute we need a working way-parser. The Mapsforge binary format spec is at <https://github.com/mapsforge/mapsforge/blob/master/docs/Specification-Binary-Map-File.md>.
 
 ## Hypotheses tried
 
@@ -121,3 +125,49 @@ pkill -9 -f "mapsforge-map-writer"; pkill -9 -f "script.sh"; pkill -9 -f "run.sh
 - Zoom 14: half that — ~1.7 km at 45°N. (Hence the original "zoom-14 tile" hunch for H1.)
 - IT17 GEOCODE `3CB27X01D01C` decodes to: `MIN_LON_X=4331, MAX_LAT_Y=2877, LON_SPAN=50, LAT_SPAN=49` → tile grid x=[4331,4380] y=[2877,2925] at zoom 13.
 - Trento city center (~46.07°N, 11.12°E) is at tile (4350, 2917) — well inside the IT17 bbox.
+
+## Followup 2026-05-14: multi-region rebuild and residual bbox shrinkage
+
+H3(b) fixed IT17. To validate the pipeline across regions, rebuilt the other 5 Italian tiles (IT05/IT06/IT09/IT16/IT20) with stock-bbox inheritance. The rebuild surfaced two pipeline bugs and one Mapsforge writer quirk.
+
+### Pipeline bugs fixed
+
+1. **`MAP_ALLOW_HD_FALLBACK` silently bypassed by `set -e`.** `run_osmosis_map_writer`'s last command propagates osmosis's exit code. With `set -e` at the top of `script.sh`, the non-zero exit aborted the script before the hd-retry block below could check `$run_status`. The IT09 rebuild OOMed on the ram writer after 56 minutes and the fallback never fired. Wrapping the call as `cmd || run_status=$?` captures the code without aborting. Commit `c1ffa54`.
+2. **`auto` writer-type decision ran on pre-osmium source size.** The heap budget was computed from the raw regional PBF (e.g. 551 MB for nord-ovest) instead of the post-clip working set (306 MB for IT09's clipped extract), leading to doomed RAM attempts on tiles where the actual working set would have fit. Restructured the per-tile loop to do the osmium pre-clip first, then recompute size, then pick writer. Added `MAP_RAM_HEAP_FACTOR` (default 20): when the capped ram heap is less than `factor × clipped-PBF-bytes`, auto picks `hd` directly. Also capped the `hd` profile's `-Xmx` to ~2/3 of installed RAM (was a fixed 8 GB regardless of host). Commit `a48940e`.
+
+### Mapsforge 0.27 header bbox shrinkage
+
+The writer writes `min(--bounding-box, data_extent_within_bounding_polygon)` into the header. Whenever the Geofabrik regional polygon (`nord-est.poly`, `nord-ovest.poly`, `centro.poly`) clips inside the requested stock bbox, the corner with the missing data gets the bbox shrunk inward — a sub-tile residual misalignment on that edge.
+
+| Tile | Region poly | Shrunk corner | Magnitude vs stock bbox |
+|---|---|---|---|
+| IT05 | centro | SW (sea / Corsica) | ~1.7 km lon / 2.2 km lat |
+| IT06 | nord-est | E (across Slovenian border) | ~870 m |
+| IT09 | nord-ovest | NE (Trentino, in nord-est) | ~1.5 km |
+| IT16 | centro | N (overlap with nord regions) | ~1.7 km |
+| IT17 | nord-est | N (across Austrian border) | ~1.1 km |
+| IT20 | nord-est | none | exact match |
+
+Two paths to fix this:
+
+- **Workaround (this session): `misc/patch_map_bbox.py`** overwrites the 16-byte bbox field at offset 44 of a target `.map` with the bbox from a reference (stock) map. Idempotent, backs up the target as `.bak` by default. The missing-data strip remains but is in sea/cross-border zones with no Italian road network. Commit `2c80179`. Applied to IT05/06/09/16/17 (IT20 was already exact).
+- **Durable fix (future work):** extend `maps.csv` rows so the bounding polygon fully covers the stock bbox. E.g. IT09 needs `nord-ovest;nord-est`, IT05 needs `centro;nord-ovest`, IT16 needs `centro;nord-est;nord-ovest`. Multi-region blending logic is already in `script.sh`. Side cost: bigger source download, longer osmium clip step.
+
+### Device verification 2026-05-14
+
+- **IT20** (built, native exact bbox match — no patch needed): tested stationary on the BiNavi Air. Map renders correctly aligned at a known landmark; GPS cursor sits on top. Pipeline validated end-to-end for the easy case.
+- **IT05/IT06/IT09/IT16/IT17** (built, post-build header patch): untested on device. Risk is that BiNavi Air may not gracefully handle a header bbox larger than the actual data extent. Cosmetic worst case: a thin blank strip along the shrunk corner. Functional worst case: the device refuses to load the file.
+- **Practical setup chosen for travel:** keep `output/IT20...map` on the device for the IT20 area, restore stock `input/IT0X...map` for the other regions. Removes any alignment-risk during travel; revisit the patched/multi-region path when time permits to physically test outside IT20.
+
+### Tag config research
+
+`tag-igpsport.xml` includes **21 way-types only, zero POIs**:
+- 16 highway types: `primary`/`*_link`, `secondary`/`*_link`, `trunk`/`*_link`, `tertiary`/`*_link`, `cycleway`, `living_street`, `pedestrian`, `residential`, `road`, `service`, `track`, `unclassified`
+- 2 natural: `coastline`, `water`
+- 5 waterways: `canal`, `dam`, `drain`, `river`, `stream`
+
+No buildings, no amenities, no shops/restaurants, no `highway=path` or `highway=footway`. The OSM forum thread that started the upstream project confirms this is by design: maps filter out features like buildings, POIs, and amenities to reduce file size and focus on navigation. Concrete user-visible differences between a stock and a rebuilt map are therefore limited to: changes in the included road/waterway tags since the source OSM snapshot, and possibly more minor road/cycleway density if the upstream stock config is narrower than this project's.
+
+### Upstream contribution
+
+Filed [TKlerx/igpsport-map-updater#1](https://github.com/TKlerx/igpsport-map-updater/pull/1) — osmium pre-clip step — as the introductory PR. Other fork-specific changes (BiNavi-Air-specific stock-bbox inheritance, `patch_map_bbox.py`, the `MAP_ALLOW_HD_FALLBACK` fix, the heap-factor heuristic) are held locally pending the maintainer's response to PR #1.
