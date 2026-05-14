@@ -28,6 +28,7 @@ This changelog documents notable changes made in this fork after diverging from 
 - Added an `osmium extract` pre-clip step before the osmosis pipeline that trims each source PBF to the tile bbox, caching the result under `download/{source}-{TILE_GEOCODE}.osm.pbf`. ~10× speedup on a 8 GB / 10-core WSL host for the IT17 tile (about 13 min vs ~3 h). Falls back to the full PBF if `osmium-tool` is not installed.
 - Added `misc/read_map_bbox.py` helper used by `script.sh` to read the header bbox of a stock map.
 - Added `misc/dump_mapheader.py` helper for inspecting Mapsforge `.map` headers.
+- Added `misc/patch_map_bbox.py` to overwrite a generated `.map`'s header bbox with the bbox from a reference (e.g. stock) map. Useful when Mapsforge 0.27 shrinks the header bbox to data extent — clipped by the bounding-polygon — causing renderers that anchor their tile grid by the header bbox to render misaligned. Backs up the target as `.bak` by default.
 - Added `runtest.sh` wrapper around `run.sh` with all runtime knobs and a timestamped log under `tmp/trials/`.
 - Added `INVESTIGATION.md` documenting the BiNavi Air alignment investigation, hypotheses, and conclusion.
 
