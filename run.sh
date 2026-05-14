@@ -34,6 +34,10 @@ if [ ! -d "$MAPS_DIR" ]; then
     exit 1
 fi
 
+# Make the original-maps dir visible to script.sh so it can inherit the
+# matching stock map's header bbox for --bounding-box.
+export ORIGINAL_MAPS_DIR="$(cd "$MAPS_DIR" && pwd)"
+
 # Step 1: Generate maps.csv
 echo ""
 echo "=========================================="

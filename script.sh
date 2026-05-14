@@ -556,10 +556,10 @@ run_osmosis_map_writer() {
 
     cmd+=(
         --bounding-box
-        "left=$TILE_MIN_LON"
-        "right=$TILE_MAX_LON"
-        "bottom=$TILE_MIN_LAT"
-        "top=$TILE_MAX_LAT"
+        "left=$BBOX_MIN_LON"
+        "right=$BBOX_MAX_LON"
+        "bottom=$BBOX_MIN_LAT"
+        "top=$BBOX_MAX_LAT"
     )
 
     cmd+=(
@@ -636,6 +636,25 @@ for i in "${!PBF_FILES[@]}"; do
     echo "  Product Code:  $PRODUCT_CODE"
     echo "  Tile Geocode:  $TILE_GEOCODE"
     echo "  Tile BBox:     minLat=$TILE_MIN_LAT minLng=$TILE_MIN_LON maxLat=$TILE_MAX_LAT maxLng=$TILE_MAX_LON"
+
+    # Prefer the matching stock map's header bbox over the tile-aligned
+    # GEOCODE bbox for --bounding-box. The tile-aligned bbox is still used
+    # to drive the osmium pre-clip (cache keyed on GEOCODE), but the bbox
+    # written into the .map header is what the BiNavi Air renderer uses
+    # to anchor its tile grid. See INVESTIGATION.md.
+    BBOX_MIN_LON="$TILE_MIN_LON"
+    BBOX_MAX_LON="$TILE_MAX_LON"
+    BBOX_MIN_LAT="$TILE_MIN_LAT"
+    BBOX_MAX_LAT="$TILE_MAX_LAT"
+    BBOX_SOURCE="tile-aligned (GEOCODE)"
+    stock_map_path="${ORIGINAL_MAPS_DIR:-}/$ORIGINAL_NAME"
+    if [ -n "${ORIGINAL_MAPS_DIR:-}" ] && [ -f "$stock_map_path" ]; then
+        if stock_bbox=$(python3 "$SCRIPT_DIR/misc/read_map_bbox.py" "$stock_map_path" 2>/dev/null); then
+            read -r BBOX_MIN_LON BBOX_MAX_LON BBOX_MIN_LAT BBOX_MAX_LAT <<< "$stock_bbox"
+            BBOX_SOURCE="stock $(basename "$stock_map_path")"
+        fi
+    fi
+    echo "  Output BBox:   minLat=$BBOX_MIN_LAT minLng=$BBOX_MIN_LON maxLat=$BBOX_MAX_LAT maxLng=$BBOX_MAX_LON  ($BBOX_SOURCE)"
     echo "  PBF Date:      $date_string"
     echo "  PBF Size:      ${pbf_size_mb} MB"
     echo "  Total RAM:     ${total_physical_gb} GB"

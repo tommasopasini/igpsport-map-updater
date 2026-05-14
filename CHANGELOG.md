@@ -5,6 +5,7 @@ This changelog documents notable changes made in this fork after diverging from 
 ## Unreleased
 
 ### Fixed
+- Fixed map feature alignment on the iGPSPORT BiNavi Air: the renderer uses the header bbox to anchor its tile grid, and the previous tile-aligned bbox derived from the GEOCODE was shifted ~2.5 km W / ~1.1 km S of the bbox stock iGPSPORT maps use, causing a ~1.7 km SW offset. `script.sh` now reads the matching stock map's bbox from `input/` (when present) and passes it to `--bounding-box`; falls back to the GEOCODE tile-aligned bbox otherwise. See `INVESTIGATION.md`.
 - Fixed a variable-name collision that broke multi-tile runs after the first tile: the outer poly-group array in `script.sh` is now `POLY_GROUPS`, distinct from the per-tile `POLY_FILES` it expands into. Pre-fix, iteration 2+ produced `--bounding-polygon "file="` and aborted osmosis.
 - Fixed silent failure when the Mapsforge writer jar download 404s: `curl` now uses `-f` so the build aborts loudly instead of saving a "Not Found" body that later causes a confusing "Task type mapfile-writer doesn't exist" osmosis error.
 - Forced LF line endings on `*.sh` via `.gitattributes` so checkouts on systems with `core.autocrlf=true` (e.g. WSL) don't reintroduce CRLF and break `#!/bin/bash\r`.
@@ -24,6 +25,7 @@ This changelog documents notable changes made in this fork after diverging from 
 - Added Python cache and pytest cache ignore rules to `.gitignore`.
 - Added option 3 / multi-region source blending for tiles that span several same-country Geofabrik subregions.
 - Added an `osmium extract` pre-clip step before the osmosis pipeline that trims each source PBF to the tile bbox, caching the result under `download/{source}-{TILE_GEOCODE}.osm.pbf`. ~10× speedup on a 8 GB / 10-core WSL host for the IT17 tile (about 13 min vs ~3 h). Falls back to the full PBF if `osmium-tool` is not installed.
+- Added `misc/read_map_bbox.py` helper used by `script.sh` to read the header bbox of a stock map.
 
 ### Changed
 - Made the end-to-end package workflow resumable for already downloaded official input maps.
