@@ -22,9 +22,9 @@
 
 ## Phase 3: CI Boundary
 
-- [ ] T013 Add GitHub Actions workflow in `.github/workflows/test.yml` that installs `uv`, syncs dependencies, and runs `uv run pytest -q`.
-- [ ] T014 Ensure CI covers `test_map_semantics.py` and `test_map_output_compare.py` fixture semantic comparison tests.
-- [ ] T015 Keep full country generation and baseline-vs-preclip package comparisons out of routine CI.
+- [x] T013 Add GitHub Actions workflow in `.github/workflows/test.yml` that installs `uv`, syncs dependencies, and runs `uv run pytest -q`.
+- [x] T014 Ensure CI covers `test_map_semantics.py` fixture semantic comparison tests.
+- [x] T015 Keep full country generation and baseline-vs-preclip package comparisons out of routine CI.
 
 ## Phase 4: Osmium Preclip Integration
 
