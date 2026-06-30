@@ -171,3 +171,34 @@ No buildings, no amenities, no shops/restaurants, no `highway=path` or `highway=
 ### Upstream contribution
 
 Filed [TKlerx/igpsport-map-updater#1](https://github.com/TKlerx/igpsport-map-updater/pull/1) — osmium pre-clip step — as the introductory PR. Other fork-specific changes (BiNavi-Air-specific stock-bbox inheritance, `patch_map_bbox.py`, the `MAP_ALLOW_HD_FALLBACK` fix, the heap-factor heuristic) are held locally pending the maintainer's response to PR #1.
+
+## Followup 2026-06-30: upstream status and how to regenerate maps in the future
+
+This section is the durable record for a future map rebuild, possibly from a different machine. Read it before regenerating.
+
+### What happened upstream
+
+- **PR #1 (osmium pre-clip) landed and was credited.** Upstream reimplemented it as `MAP_PRECLIP_MODE=disabled|auto|required` plus a Docker path (`igpsport_map_updater/preclip.py`). The upstream CHANGELOG credits "the optimization idea from PR #1". No need to carry the fork's own osmium code forward.
+- **PR #2 ([#2](https://github.com/TKlerx/igpsport-map-updater/pull/2)) is open and mergeable.** It carries two `script.sh` correctness fixes that are still needed upstream: the `set -e` bypass of `MAP_ALLOW_HD_FALLBACK`, and `curl -fsL` so HTTP errors (e.g. a 404) fail loudly instead of saving an error body. A third fix from this fork (the multi-tile `POLY_FILES`/`POLY_GROUPS` array collision) was dropped from the PR because upstream fixed it independently (their per-tile array is now `INPUT_POLY_FILES`).
+- **Upstream restructured heavily** into an `igpsport_map_updater/` Python package, added GitHub Spec Kit, Docker, iGS630/iGS800 tag profiles, and a Mapsforge semantic-comparison tool. The fork's `main` therefore does **not** rebase cleanly onto upstream, and most of the fork's local commits are now obsolete, redundant (in PR #2), or unwanted upstream.
+
+### Decision: do NOT rebase or sync this fork's `main` pre-emptively
+
+Maps change slowly, so a rebuild is occasional and not urgent. Upstream is also still moving (Docker, spec-kit), so syncing now just goes stale before the next rebuild. When the time comes, sync fresh rather than maintaining a long-lived divergent branch.
+
+### Recipe — when you actually regenerate
+
+1. **Start from current upstream**, not this fork's `main`. Either clone `TKlerx/igpsport-map-updater` fresh, or in this fork `git fetch origin && git checkout origin/main`. The upstream package layout supersedes the fork's root-level scripts.
+2. **Build as usual** (`run.sh` / the package workflow, optionally `MAP_PRECLIP_MODE=auto` now that pre-clip is built in).
+3. **BiNavi-Air alignment is NOT applied automatically — you must patch it per tile after the build.** This is the key gotcha:
+   - The generated `.map` header bbox is still **tile-aligned** (GEOCODE-derived `--bounding-box` in `script.sh`), which is what produced the ~1.7 km SW offset on the BiNavi Air. See H3(b) and the bbox-shrinkage section above for why the device anchors its tile grid to the header bbox.
+   - Upstream's header patcher (`repair_igs630_map_header`) only runs under `MAP_TAG_PROFILE=igs630` and patches `created_by` only — it does **not** fix the bbox.
+   - **But upstream ships the exact tool needed.** `igpsport_map_updater/patch_mapsforge_header.py` has a `--bbox` mode functionally identical to this fork's `patch_map_bbox.py` (same offset 44, copies the stock map's 16-byte bbox header). So no fork code needs re-porting — run, per tile:
+
+     ```bash
+     python igpsport_map_updater/patch_mapsforge_header.py <stock.map> <generated.map> --bbox
+     ```
+
+     (`<stock.map>` = the official iGPSPORT map for that tile; patches the generated map in place, or writes to an optional output path.)
+4. **Residual edge shrinkage still applies** to tiles whose Geofabrik polygon clips inside the stock bbox (IT05/06/09/16/17; IT20 is exact). The `--bbox` patch restores the full header bbox, leaving at most a thin blank strip in sea/cross-border zones with no Italian roads. The durable alternative is multi-region source blending in `maps.csv` (see the bbox-shrinkage section above).
+5. **Device test before relying on it while travelling.** Only IT20 (exact native bbox) was verified on-device. Patched tiles were not. Worst case for an oversized header bbox is a blank corner strip or the device refusing the file.
